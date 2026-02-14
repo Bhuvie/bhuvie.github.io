@@ -16,7 +16,6 @@
     font-family: 'Courier New', monospace;
   }
   canvas {
-    border: 2px solid #3a3;
     display: block;
   }
 </style>
@@ -26,6 +25,30 @@
 <script>
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
+
+// --- Fullscreen Scaling (maintain 4:3, HiDPI-aware) ---
+let canvasScale = 1;
+
+function resizeCanvas() {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const aspect = 4 / 3;
+  if (vw / vh > aspect) {
+    canvasScale = vh / 600;
+  } else {
+    canvasScale = vw / 800;
+  }
+  const dpr = window.devicePixelRatio || 1;
+  const displayW = Math.floor(800 * canvasScale);
+  const displayH = Math.floor(600 * canvasScale);
+  canvas.style.width = displayW + 'px';
+  canvas.style.height = displayH + 'px';
+  canvas.width = displayW * dpr;
+  canvas.height = displayH * dpr;
+  ctx.setTransform(dpr * canvasScale, 0, 0, dpr * canvasScale, 0, 0);
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
 
 // --- Audio ---
 let audioCtx = null;
@@ -230,8 +253,8 @@ function playSound(type) {
 }
 
 // --- Constants ---
-const W = canvas.width;
-const H = canvas.height;
+const W = 800;
+const H = 600;
 const TANK_SIZE = 30;
 const BULLET_SPEED = 7;
 const BULLET_RADIUS = 3;
@@ -247,9 +270,9 @@ const DIFFICULTIES = [
     playerSpeed: 3.8,
     enemySpawnInitial: 160,
     enemySpawnMin: 70,
-    enemySpeedMult: 0.8,
+    enemySpeedMult: 0.6,
     enemyHpMult: 1,
-    enemyBulletSpeedMult: 0.8,
+    enemyBulletSpeedMult: 0.7,
     enemyShootRateMult: 1.4,  // higher = slower shooting
     powerupInterval: 400,
     scoreMultiplier: 0.5,
@@ -310,45 +333,117 @@ const WALL_SIZE = 40; // matches grid
 // Wall types: 'steel' = indestructible, 'brick' = destructible (2 hits), 'concrete' = indestructible + taller look
 function generateWalls() {
   const walls = [];
+  const GRID_W = 20; // 800 / 40
+  const GRID_H = 15; // 600 / 40
+  const grid = Array.from({ length: GRID_H }, () => Array(GRID_W).fill(false));
 
-  // Layout patterns - mix of cover spots and corridors
-  // Each entry: [gridX, gridY, type]
-  const layouts = [
-    // Four corner bunkers (L-shapes)
-    [2,2,'steel'], [3,2,'steel'], [2,3,'brick'],
-    [16,2,'steel'], [17,2,'steel'], [17,3,'brick'],
-    [2,12,'steel'], [3,12,'steel'], [2,11,'brick'],
-    [16,12,'steel'], [17,12,'steel'], [17,11,'brick'],
+  // Forbidden zones: center (player spawn), edges (row 0, col 0, last row/col)
+  function isForbidden(gx, gy) {
+    // Edges
+    if (gx <= 0 || gx >= GRID_W - 1 || gy <= 0 || gy >= GRID_H - 1) return true;
+    // Center 4x4 area (player spawn zone)
+    if (gx >= 8 && gx <= 11 && gy >= 5 && gy <= 9) return true;
+    return false;
+  }
 
-    // Central cross structure
-    [9,5,'brick'], [10,5,'brick'],
-    [9,8,'brick'], [10,8,'brick'],
-    [8,6,'brick'], [8,7,'brick'],
-    [11,6,'brick'], [11,7,'brick'],
-    [9,6,'steel'], [10,7,'steel'],
-
-    // Side barriers
-    [5,6,'concrete'], [5,7,'concrete'],
-    [14,6,'concrete'], [14,7,'concrete'],
-
-    // Top and bottom corridors
-    [6,3,'brick'], [7,3,'brick'], [12,3,'brick'], [13,3,'brick'],
-    [6,10,'brick'], [7,10,'brick'], [12,10,'brick'], [13,10,'brick'],
-
-    // Scattered cover
-    [4,9,'brick'], [15,4,'brick'],
-    [3,5,'concrete'], [16,9,'concrete'],
-  ];
-
-  for (const [gx, gy, type] of layouts) {
+  function placeWall(gx, gy, type) {
+    if (isForbidden(gx, gy) || grid[gy][gx]) return false;
+    grid[gy][gx] = true;
     walls.push({
       x: gx * WALL_SIZE + WALL_SIZE / 2,
       y: gy * WALL_SIZE + WALL_SIZE / 2,
       w: WALL_SIZE,
       h: WALL_SIZE,
       type,
-      hp: type === 'brick' ? 2 : -1, // -1 = indestructible
+      hp: type === 'brick' ? 2 : -1,
     });
+    return true;
+  }
+
+  function randInt(min, max) { return min + Math.floor(Math.random() * (max - min + 1)); }
+  function pickType() {
+    const r = Math.random();
+    if (r < 0.55) return 'brick';
+    if (r < 0.8) return 'steel';
+    return 'concrete';
+  }
+
+  // Shape generators
+  const shapes = [
+    // Horizontal line (2-4 blocks)
+    function(gx, gy) {
+      const len = randInt(2, 4);
+      const t = pickType();
+      const cells = [];
+      for (let i = 0; i < len; i++) cells.push([gx + i, gy, t]);
+      return cells;
+    },
+    // Vertical line (2-4 blocks)
+    function(gx, gy) {
+      const len = randInt(2, 4);
+      const t = pickType();
+      const cells = [];
+      for (let i = 0; i < len; i++) cells.push([gx, gy + i, t]);
+      return cells;
+    },
+    // L-shape
+    function(gx, gy) {
+      const t = pickType();
+      const t2 = Math.random() < 0.5 ? 'brick' : t;
+      return [[gx, gy, t], [gx + 1, gy, t], [gx, gy + 1, t2]];
+    },
+    // 2x2 block
+    function(gx, gy) {
+      const t = pickType();
+      return [[gx, gy, t], [gx + 1, gy, t], [gx, gy + 1, t], [gx + 1, gy + 1, t]];
+    },
+    // Single block
+    function(gx, gy) {
+      return [[gx, gy, pickType()]];
+    },
+    // T-shape
+    function(gx, gy) {
+      const t = pickType();
+      return [[gx, gy, t], [gx + 1, gy, t], [gx + 2, gy, t], [gx + 1, gy + 1, t]];
+    },
+  ];
+
+  // Place 10-16 shape clusters
+  const numClusters = randInt(10, 16);
+  for (let c = 0; c < numClusters; c++) {
+    // Try random positions until a shape fits
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const gx = randInt(1, GRID_W - 5);
+      const gy = randInt(1, GRID_H - 4);
+      const shape = shapes[Math.floor(Math.random() * shapes.length)];
+      const cells = shape(gx, gy);
+
+      // Check all cells are valid
+      let valid = true;
+      for (const [cx, cy] of cells) {
+        if (cx < 0 || cx >= GRID_W || cy < 0 || cy >= GRID_H || isForbidden(cx, cy) || grid[cy][cx]) {
+          valid = false;
+          break;
+        }
+      }
+      if (!valid) continue;
+
+      // Place all cells
+      for (const [cx, cy, ct] of cells) {
+        placeWall(cx, cy, ct);
+      }
+      break;
+    }
+  }
+
+  // Mirror some structures for balanced feel: pick ~30% of walls and mirror them
+  const toMirror = walls.filter(() => Math.random() < 0.3);
+  for (const w of toMirror) {
+    const mgx = GRID_W - 1 - Math.floor(w.x / WALL_SIZE);
+    const mgy = GRID_H - 1 - Math.floor(w.y / WALL_SIZE);
+    if (!isForbidden(mgx, mgy) && !grid[mgy][mgx]) {
+      placeWall(mgx, mgy, w.type);
+    }
   }
 
   return walls;
@@ -479,6 +574,7 @@ document.addEventListener('keydown', e => {
     }
   } else if (game.state === 'gameover' && e.key === 'Enter') {
     initAudio();
+    game.shakeTimer = 0;
     game.state = 'difficulty';
   }
 });
@@ -627,19 +723,19 @@ function spawnPowerup() {
 }
 
 // --- Update ---
-function update() {
+function update(dt) {
   if (game.state !== 'playing') return;
 
   const p = game.player;
   const k = game.keys;
-  game.frameCount++;
+  game.frameCount += dt;
 
   // Player movement
   let moved = false;
-  if (k['ArrowUp'] || k['w']) { p.dir = 'up'; p.y -= p.speed; moved = true; }
-  if (k['ArrowDown'] || k['s']) { p.dir = 'down'; p.y += p.speed; moved = true; }
-  if (k['ArrowLeft'] || k['a']) { p.dir = 'left'; p.x -= p.speed; moved = true; }
-  if (k['ArrowRight'] || k['d']) { p.dir = 'right'; p.x += p.speed; moved = true; }
+  if (k['ArrowUp'] || k['w']) { p.dir = 'up'; p.y -= p.speed * dt; moved = true; }
+  if (k['ArrowDown'] || k['s']) { p.dir = 'down'; p.y += p.speed * dt; moved = true; }
+  if (k['ArrowLeft'] || k['a']) { p.dir = 'left'; p.x -= p.speed * dt; moved = true; }
+  if (k['ArrowRight'] || k['d']) { p.dir = 'right'; p.x += p.speed * dt; moved = true; }
 
   // Clamp player
   p.x = Math.max(p.w / 2, Math.min(W - p.w / 2, p.x));
@@ -649,10 +745,10 @@ function update() {
   resolveWallCollision(p);
 
   // Timers
-  if (p.shootCooldown > 0) p.shootCooldown--;
-  if (p.shieldTimer > 0) p.shieldTimer--;
-  if (p.invincibleTimer > 0) p.invincibleTimer--;
-  if (game.shakeTimer > 0) game.shakeTimer--;
+  if (p.shootCooldown > 0) p.shootCooldown -= dt;
+  if (p.shieldTimer > 0) p.shieldTimer -= dt;
+  if (p.invincibleTimer > 0) p.invincibleTimer -= dt;
+  if (game.shakeTimer > 0) game.shakeTimer -= dt;
 
   // Shooting
   if (k[' '] && p.shootCooldown <= 0) {
@@ -669,15 +765,15 @@ function update() {
 
   // Update bullets
   game.bullets = game.bullets.filter(b => {
-    b.x += b.vx;
-    b.y += b.vy;
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
     if (b.x < -10 || b.x > W + 10 || b.y < -10 || b.y > H + 10) return false;
     if (bulletHitWall(b.x, b.y)) return false;
     return true;
   });
 
   // Enemy spawning
-  game.enemySpawnTimer++;
+  game.enemySpawnTimer += dt;
   if (game.enemySpawnTimer >= game.enemySpawnInterval) {
     spawnEnemy();
     game.enemySpawnTimer = 0;
@@ -688,7 +784,7 @@ function update() {
   }
 
   // Powerup spawning
-  game.powerupTimer++;
+  game.powerupTimer += dt;
   if (game.powerupTimer >= activeDifficulty.powerupInterval) {
     spawnPowerup();
     game.powerupTimer = 0;
@@ -699,11 +795,11 @@ function update() {
     const def = ENEMY_TYPES[e.type];
 
     // --- Type-specific AI for direction choosing ---
-    e.changeTimer--;
+    e.changeTimer -= dt;
 
     if (e.type === 'scout') {
       // Erratic jinking movement - frequently changes direction randomly
-      e.jinkTimer--;
+      e.jinkTimer -= dt;
       if (e.jinkTimer <= 0) {
         e.jinkTimer = 15 + Math.floor(Math.random() * 25);
         // 50% chase player, 50% random
@@ -788,8 +884,8 @@ function update() {
 
     // --- Movement ---
     const v = dirToVec(e.dir);
-    e.x += v.x * e.speed;
-    e.y += v.y * e.speed;
+    e.x += v.x * e.speed * dt;
+    e.y += v.y * e.speed * dt;
 
     // Bounce off screen edges
     if (e.x < e.w / 2) { e.x = e.w / 2; e.dir = 'right'; }
@@ -808,7 +904,7 @@ function update() {
     }
 
     // --- Type-specific shooting ---
-    e.shootCooldown--;
+    e.shootCooldown -= dt;
     if (e.shootCooldown <= 0) {
       let shootDir;
       let bSpeed = def.bulletSpeed * activeDifficulty.enemyBulletSpeedMult;
@@ -854,8 +950,8 @@ function update() {
 
   // Update enemy bullets
   game.enemyBullets = game.enemyBullets.filter(b => {
-    b.x += b.vx;
-    b.y += b.vy;
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
     if (b.x < -10 || b.x > W + 10 || b.y < -10 || b.y > H + 10) return false;
     if (bulletHitWall(b.x, b.y)) return false;
     return true;
@@ -927,7 +1023,7 @@ function update() {
 
   // Powerup collection
   game.powerups = game.powerups.filter(pu => {
-    pu.timer--;
+    pu.timer -= dt;
     if (pu.timer <= 0) return false;
     if (rectsCollide(p, pu)) {
       if (pu.type === 'shield') {
@@ -942,11 +1038,12 @@ function update() {
 
   // Update particles
   game.particles = game.particles.filter(pt => {
-    pt.x += pt.vx;
-    pt.y += pt.vy;
-    pt.vx *= 0.96;
-    pt.vy *= 0.96;
-    pt.life--;
+    pt.x += pt.vx * dt;
+    pt.y += pt.vy * dt;
+    const drag = Math.pow(0.96, dt);
+    pt.vx *= drag;
+    pt.vy *= drag;
+    pt.life -= dt;
     return pt.life > 0;
   });
 
@@ -1306,6 +1403,9 @@ function drawShield(x, y, size) {
 }
 
 function draw() {
+  // Reset to base HiDPI + scaling transform
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(dpr * canvasScale, 0, 0, dpr * canvasScale, 0, 0);
   ctx.save();
 
   // Screen shake
@@ -1585,9 +1685,6 @@ function drawTitle() {
   ctx.font = 'bold 48px Courier New';
   ctx.textAlign = 'center';
   ctx.fillText('BATTLE TANK', W / 2, H / 2 - 80);
-  ctx.font = 'bold 12px Courier New';
-  ctx.fillText('made with nostalgic ❤️ by Bhuvi', W / 2, H / 2 - 60);
-  ctx.fillText('v4', W / 2, H / 2 - 40);
 
   ctx.font = '16px Courier New';
   ctx.fillStyle = '#aaa';
@@ -1622,6 +1719,12 @@ function drawTitle() {
 
   // Draw player tank
   drawTank(W / 2, H / 2 - 150, 40, 40, 'up', '#4a4', '#2a2');
+
+  // Credit line at the bottom
+  ctx.font = '13px Courier New';
+  ctx.fillStyle = '#777';
+  ctx.textAlign = 'center';
+  ctx.fillText('made with nostalgic \u2764\uFE0F by bhuvi', W / 2, H - 20);
 }
 
 function drawDifficulty() {
@@ -1720,14 +1823,20 @@ function drawGameOver() {
   ctx.fillText('Press ENTER to continue', W / 2, H / 2 + 80);
 }
 
-// --- Game Loop ---
-function loop() {
-  update();
+// --- Game Loop (delta-time) ---
+let lastTime = performance.now();
+
+function loop(now) {
+  const elapsed = now - lastTime;
+  lastTime = now;
+  // dt = 1.0 at 60fps (16.667ms per frame), clamped to avoid spiral of death
+  const dt = Math.min(elapsed / 16.667, 3);
+  update(dt);
   draw();
   requestAnimationFrame(loop);
 }
 
-loop();
+requestAnimationFrame(loop);
 </script>
 </body>
 </html>
