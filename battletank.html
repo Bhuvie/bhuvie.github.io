@@ -1,0 +1,1842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Battle Tank</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #111;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+  }
+  canvas {
+    display: block;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="600"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// --- Fullscreen Scaling (maintain 4:3, HiDPI-aware) ---
+let canvasScale = 1;
+
+function resizeCanvas() {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const aspect = 4 / 3;
+  if (vw / vh > aspect) {
+    canvasScale = vh / 600;
+  } else {
+    canvasScale = vw / 800;
+  }
+  const dpr = window.devicePixelRatio || 1;
+  const displayW = Math.floor(800 * canvasScale);
+  const displayH = Math.floor(600 * canvasScale);
+  canvas.style.width = displayW + 'px';
+  canvas.style.height = displayH + 'px';
+  canvas.width = displayW * dpr;
+  canvas.height = displayH * dpr;
+  ctx.setTransform(dpr * canvasScale, 0, 0, dpr * canvasScale, 0, 0);
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// --- Audio ---
+let audioCtx = null;
+
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+}
+
+function playSound(type) {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+
+  switch (type) {
+    case 'shoot': {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(600, t);
+      osc.frequency.exponentialRampToValueAtTime(200, t + 0.08);
+      gain.gain.setValueAtTime(0.15, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + 0.08);
+      break;
+    }
+    case 'enemyShoot': {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(400, t);
+      osc.frequency.exponentialRampToValueAtTime(150, t + 0.06);
+      gain.gain.setValueAtTime(0.06, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + 0.06);
+      break;
+    }
+    case 'hit': {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(300, t);
+      osc.frequency.exponentialRampToValueAtTime(100, t + 0.1);
+      gain.gain.setValueAtTime(0.12, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + 0.1);
+      break;
+    }
+    case 'explode': {
+      // Noise burst via buffer
+      const dur = 0.25;
+      const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * dur, audioCtx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) {
+        data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+      }
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      const gain = audioCtx.createGain();
+      gain.gain.setValueAtTime(0.2, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(800, t);
+      filter.frequency.exponentialRampToValueAtTime(100, t + dur);
+      src.connect(filter).connect(gain).connect(audioCtx.destination);
+      src.start(t);
+      break;
+    }
+    case 'heavyExplode': {
+      const dur = 0.4;
+      const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * dur, audioCtx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) {
+        data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+      }
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      const gain = audioCtx.createGain();
+      gain.gain.setValueAtTime(0.3, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(600, t);
+      filter.frequency.exponentialRampToValueAtTime(60, t + dur);
+      src.connect(filter).connect(gain).connect(audioCtx.destination);
+      src.start(t);
+      // Sub-bass thump
+      const osc = audioCtx.createOscillator();
+      const g2 = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(80, t);
+      osc.frequency.exponentialRampToValueAtTime(30, t + 0.3);
+      g2.gain.setValueAtTime(0.3, t);
+      g2.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+      osc.connect(g2).connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + 0.3);
+      break;
+    }
+    case 'playerHit': {
+      // Harsh noise + falling tone
+      const dur = 0.35;
+      const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * dur, audioCtx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) {
+        data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+      }
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      const gain = audioCtx.createGain();
+      gain.gain.setValueAtTime(0.25, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      src.connect(gain).connect(audioCtx.destination);
+      src.start(t);
+      // Falling tone
+      const osc = audioCtx.createOscillator();
+      const g2 = audioCtx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(500, t);
+      osc.frequency.exponentialRampToValueAtTime(80, t + 0.3);
+      g2.gain.setValueAtTime(0.15, t);
+      g2.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+      osc.connect(g2).connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + 0.3);
+      break;
+    }
+    case 'shieldPickup': {
+      // Rising arpeggio
+      [523, 659, 784, 1047].forEach((freq, i) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, t + i * 0.07);
+        gain.gain.setValueAtTime(0, t + i * 0.07);
+        gain.gain.linearRampToValueAtTime(0.15, t + i * 0.07 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.07 + 0.15);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(t + i * 0.07);
+        osc.stop(t + i * 0.07 + 0.15);
+      });
+      break;
+    }
+    case 'shieldBreak': {
+      // Glass shatter - high noise burst
+      const dur = 0.2;
+      const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * dur, audioCtx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) {
+        data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+      }
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      const gain = audioCtx.createGain();
+      gain.gain.setValueAtTime(0.15, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'highpass';
+      filter.frequency.setValueAtTime(2000, t);
+      src.connect(filter).connect(gain).connect(audioCtx.destination);
+      src.start(t);
+      break;
+    }
+    case 'gameOver': {
+      // Descending notes
+      [440, 370, 311, 220].forEach((freq, i) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(freq, t + i * 0.2);
+        gain.gain.setValueAtTime(0.12, t + i * 0.2);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.2 + 0.3);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(t + i * 0.2);
+        osc.stop(t + i * 0.2 + 0.3);
+      });
+      break;
+    }
+    case 'start': {
+      // Quick ascending tone
+      [262, 330, 392, 523].forEach((freq, i) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(freq, t + i * 0.08);
+        gain.gain.setValueAtTime(0.1, t + i * 0.08);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.08 + 0.12);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(t + i * 0.08);
+        osc.stop(t + i * 0.08 + 0.12);
+      });
+      break;
+    }
+  }
+}
+
+// --- Constants ---
+const W = 800;
+const H = 600;
+const TANK_SIZE = 30;
+const BULLET_SPEED = 7;
+const BULLET_RADIUS = 3;
+const POWERUP_SIZE = 20;
+
+// --- Difficulty Presets ---
+const DIFFICULTIES = [
+  {
+    name: 'EASY',
+    desc: 'Relaxed pace, extra lives, frequent shields',
+    color: '#4c4',
+    lives: 5,
+    playerSpeed: 3.8,
+    enemySpawnInitial: 160,
+    enemySpawnMin: 70,
+    enemySpeedMult: 0.6,
+    enemyHpMult: 1,
+    enemyBulletSpeedMult: 0.7,
+    enemyShootRateMult: 1.4,  // higher = slower shooting
+    powerupInterval: 400,
+    scoreMultiplier: 0.5,
+  },
+  {
+    name: 'NORMAL',
+    desc: 'The standard battlefield experience',
+    color: '#cc3',
+    lives: 3,
+    playerSpeed: 3.5,
+    enemySpawnInitial: 120,
+    enemySpawnMin: 40,
+    enemySpeedMult: 1,
+    enemyHpMult: 1,
+    enemyBulletSpeedMult: 1,
+    enemyShootRateMult: 1,
+    powerupInterval: 600,
+    scoreMultiplier: 1,
+  },
+  {
+    name: 'HARD',
+    desc: 'Faster enemies, fewer powerups, no mercy',
+    color: '#e83',
+    lives: 2,
+    playerSpeed: 3.5,
+    enemySpawnInitial: 90,
+    enemySpawnMin: 25,
+    enemySpeedMult: 1.25,
+    enemyHpMult: 1,
+    enemyBulletSpeedMult: 1.2,
+    enemyShootRateMult: 0.75,
+    powerupInterval: 900,
+    scoreMultiplier: 1.5,
+  },
+  {
+    name: 'NIGHTMARE',
+    desc: 'Swarming hordes, armored enemies, good luck',
+    color: '#f44',
+    lives: 1,
+    playerSpeed: 3.2,
+    enemySpawnInitial: 60,
+    enemySpawnMin: 15,
+    enemySpeedMult: 1.4,
+    enemyHpMult: 2,
+    enemyBulletSpeedMult: 1.3,
+    enemyShootRateMult: 0.6,
+    powerupInterval: 1200,
+    scoreMultiplier: 2.5,
+  },
+];
+
+let selectedDifficulty = 1; // default Normal
+let activeDifficulty = DIFFICULTIES[1];
+
+// --- Walls / Obstacles ---
+const WALL_SIZE = 40; // matches grid
+
+// Wall types: 'steel' = indestructible, 'brick' = destructible (2 hits), 'concrete' = indestructible + taller look
+function generateWalls() {
+  const walls = [];
+  const GRID_W = 20; // 800 / 40
+  const GRID_H = 15; // 600 / 40
+  const grid = Array.from({ length: GRID_H }, () => Array(GRID_W).fill(false));
+
+  // Forbidden zones: center (player spawn), edges (row 0, col 0, last row/col)
+  function isForbidden(gx, gy) {
+    // Edges
+    if (gx <= 0 || gx >= GRID_W - 1 || gy <= 0 || gy >= GRID_H - 1) return true;
+    // Center 4x4 area (player spawn zone)
+    if (gx >= 8 && gx <= 11 && gy >= 5 && gy <= 9) return true;
+    return false;
+  }
+
+  function placeWall(gx, gy, type) {
+    if (isForbidden(gx, gy) || grid[gy][gx]) return false;
+    grid[gy][gx] = true;
+    walls.push({
+      x: gx * WALL_SIZE + WALL_SIZE / 2,
+      y: gy * WALL_SIZE + WALL_SIZE / 2,
+      w: WALL_SIZE,
+      h: WALL_SIZE,
+      type,
+      hp: type === 'brick' ? 2 : -1,
+    });
+    return true;
+  }
+
+  function randInt(min, max) { return min + Math.floor(Math.random() * (max - min + 1)); }
+  function pickType() {
+    const r = Math.random();
+    if (r < 0.55) return 'brick';
+    if (r < 0.8) return 'steel';
+    return 'concrete';
+  }
+
+  // Shape generators
+  const shapes = [
+    // Horizontal line (2-4 blocks)
+    function(gx, gy) {
+      const len = randInt(2, 4);
+      const t = pickType();
+      const cells = [];
+      for (let i = 0; i < len; i++) cells.push([gx + i, gy, t]);
+      return cells;
+    },
+    // Vertical line (2-4 blocks)
+    function(gx, gy) {
+      const len = randInt(2, 4);
+      const t = pickType();
+      const cells = [];
+      for (let i = 0; i < len; i++) cells.push([gx, gy + i, t]);
+      return cells;
+    },
+    // L-shape
+    function(gx, gy) {
+      const t = pickType();
+      const t2 = Math.random() < 0.5 ? 'brick' : t;
+      return [[gx, gy, t], [gx + 1, gy, t], [gx, gy + 1, t2]];
+    },
+    // 2x2 block
+    function(gx, gy) {
+      const t = pickType();
+      return [[gx, gy, t], [gx + 1, gy, t], [gx, gy + 1, t], [gx + 1, gy + 1, t]];
+    },
+    // Single block
+    function(gx, gy) {
+      return [[gx, gy, pickType()]];
+    },
+    // T-shape
+    function(gx, gy) {
+      const t = pickType();
+      return [[gx, gy, t], [gx + 1, gy, t], [gx + 2, gy, t], [gx + 1, gy + 1, t]];
+    },
+  ];
+
+  // Place 10-16 shape clusters
+  const numClusters = randInt(10, 16);
+  for (let c = 0; c < numClusters; c++) {
+    // Try random positions until a shape fits
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const gx = randInt(1, GRID_W - 5);
+      const gy = randInt(1, GRID_H - 4);
+      const shape = shapes[Math.floor(Math.random() * shapes.length)];
+      const cells = shape(gx, gy);
+
+      // Check all cells are valid
+      let valid = true;
+      for (const [cx, cy] of cells) {
+        if (cx < 0 || cx >= GRID_W || cy < 0 || cy >= GRID_H || isForbidden(cx, cy) || grid[cy][cx]) {
+          valid = false;
+          break;
+        }
+      }
+      if (!valid) continue;
+
+      // Place all cells
+      for (const [cx, cy, ct] of cells) {
+        placeWall(cx, cy, ct);
+      }
+      break;
+    }
+  }
+
+  // Mirror some structures for balanced feel: pick ~30% of walls and mirror them
+  const toMirror = walls.filter(() => Math.random() < 0.3);
+  for (const w of toMirror) {
+    const mgx = GRID_W - 1 - Math.floor(w.x / WALL_SIZE);
+    const mgy = GRID_H - 1 - Math.floor(w.y / WALL_SIZE);
+    if (!isForbidden(mgx, mgy) && !grid[mgy][mgx]) {
+      placeWall(mgx, mgy, w.type);
+    }
+  }
+
+  return walls;
+}
+
+// Check if a moving rect collides with any wall and push it out
+function resolveWallCollision(obj) {
+  for (const wall of game.walls) {
+    if (!rectsCollide(obj, wall)) continue;
+
+    // Find the smallest overlap axis and push out
+    const overlapLeft = (obj.x + obj.w / 2) - (wall.x - wall.w / 2);
+    const overlapRight = (wall.x + wall.w / 2) - (obj.x - obj.w / 2);
+    const overlapTop = (obj.y + obj.h / 2) - (wall.y - wall.h / 2);
+    const overlapBottom = (wall.y + wall.h / 2) - (obj.y - obj.h / 2);
+
+    const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+
+    if (minOverlap === overlapLeft) obj.x = wall.x - wall.w / 2 - obj.w / 2;
+    else if (minOverlap === overlapRight) obj.x = wall.x + wall.w / 2 + obj.w / 2;
+    else if (minOverlap === overlapTop) obj.y = wall.y - wall.h / 2 - obj.h / 2;
+    else obj.y = wall.y + wall.h / 2 + obj.h / 2;
+  }
+}
+
+// Check if a bullet hits any wall. Returns true if bullet should be destroyed.
+function bulletHitWall(bx, by) {
+  for (let i = game.walls.length - 1; i >= 0; i--) {
+    const wall = game.walls[i];
+    if (circleRectCollide(bx, by, BULLET_RADIUS, wall.x, wall.y, wall.w, wall.h)) {
+      if (wall.type === 'brick') {
+        wall.hp--;
+        spawnParticles(bx, by, '#b73', 4);
+        if (wall.hp <= 0) {
+          spawnParticles(wall.x, wall.y, '#963', 10);
+          playSound('hit');
+          game.walls.splice(i, 1);
+        }
+      } else {
+        // Spark off steel/concrete
+        spawnParticles(bx, by, '#aaa', 3);
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+// Check if enemy direction change would walk into a wall - used for smarter AI
+function wouldHitWall(obj, dir) {
+  const v = dirToVec(dir);
+  const testObj = {
+    x: obj.x + v.x * (obj.speed + 2),
+    y: obj.y + v.y * (obj.speed + 2),
+    w: obj.w,
+    h: obj.h,
+  };
+  for (const wall of game.walls) {
+    if (rectsCollide(testObj, wall)) return true;
+  }
+  return false;
+}
+
+// --- Game State ---
+let game = {};
+
+function resetGame() {
+  const diff = activeDifficulty;
+  game = {
+    state: 'title', // title, difficulty, playing, gameover
+    score: 0,
+    lives: diff.lives,
+    player: {
+      x: W / 2,
+      y: H / 2,
+      w: TANK_SIZE,
+      h: TANK_SIZE,
+      speed: diff.playerSpeed,
+      dir: 'up',
+      shieldTimer: 0,
+      shootCooldown: 0,
+      invincibleTimer: 0,
+    },
+    bullets: [],
+    enemyBullets: [],
+    enemies: [],
+    walls: generateWalls(),
+    powerups: [],
+    particles: [],
+    keys: {},
+    frameCount: 0,
+    enemySpawnTimer: 0,
+    enemySpawnInterval: diff.enemySpawnInitial,
+    powerupTimer: 0,
+    shakeTimer: 0,
+    shakeIntensity: 0,
+  };
+}
+
+resetGame();
+
+// --- Input ---
+document.addEventListener('keydown', e => {
+  game.keys[e.key] = true;
+  if (e.key === ' ' || e.key === 'ArrowUp' || e.key === 'ArrowDown' ||
+      e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    e.preventDefault();
+  }
+
+  if (game.state === 'title' && e.key === 'Enter') {
+    initAudio();
+    playSound('shoot');
+    game.state = 'difficulty';
+  } else if (game.state === 'difficulty') {
+    if (e.key === 'ArrowUp' || e.key === 'w') {
+      selectedDifficulty = Math.max(0, selectedDifficulty - 1);
+      playSound('hit');
+    } else if (e.key === 'ArrowDown' || e.key === 's') {
+      selectedDifficulty = Math.min(DIFFICULTIES.length - 1, selectedDifficulty + 1);
+      playSound('hit');
+    } else if (e.key === 'Enter') {
+      activeDifficulty = DIFFICULTIES[selectedDifficulty];
+      resetGame();
+      game.state = 'playing';
+      playSound('start');
+    } else if (e.key === 'Escape') {
+      game.state = 'title';
+    }
+  } else if (game.state === 'gameover' && e.key === 'Enter') {
+    initAudio();
+    game.shakeTimer = 0;
+    game.state = 'difficulty';
+  }
+});
+
+document.addEventListener('keyup', e => {
+  game.keys[e.key] = false;
+});
+
+// --- Helpers ---
+function rectsCollide(a, b) {
+  return a.x - a.w / 2 < b.x + b.w / 2 &&
+         a.x + a.w / 2 > b.x - b.w / 2 &&
+         a.y - a.h / 2 < b.y + b.h / 2 &&
+         a.y + a.h / 2 > b.y - b.h / 2;
+}
+
+function circleRectCollide(cx, cy, cr, rx, ry, rw, rh) {
+  const closestX = Math.max(rx - rw / 2, Math.min(cx, rx + rw / 2));
+  const closestY = Math.max(ry - rh / 2, Math.min(cy, ry + rh / 2));
+  const dx = cx - closestX;
+  const dy = cy - closestY;
+  return dx * dx + dy * dy < cr * cr;
+}
+
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1 + Math.random() * 3;
+    game.particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 20 + Math.random() * 20,
+      maxLife: 40,
+      color,
+      size: 2 + Math.random() * 3,
+    });
+  }
+}
+
+function dirToAngle(dir) {
+  switch (dir) {
+    case 'up': return -Math.PI / 2;
+    case 'down': return Math.PI / 2;
+    case 'left': return Math.PI;
+    case 'right': return 0;
+  }
+}
+
+function dirToVec(dir) {
+  switch (dir) {
+    case 'up': return { x: 0, y: -1 };
+    case 'down': return { x: 0, y: 1 };
+    case 'left': return { x: -1, y: 0 };
+    case 'right': return { x: 1, y: 0 };
+  }
+}
+
+// --- Enemy Type Definitions ---
+// scout:      yellow  - fast, fragile, erratic movement, shoots rarely
+// soldier:    red     - balanced all-rounder, steady pursuit
+// heavy:      maroon  - slow, 3 HP, shoots often, relentless
+// sniper:     purple  - hangs back, fast accurate bullets, aims at player
+// demolisher: orange  - targets brick walls to destroy cover, then hunts player
+
+const ENEMY_TYPES = {
+  scout:      { w: 24, h: 24, speed: 2.8, hp: 1, shootRate: 130, bulletSpeed: 4,   score: 10,  body: '#cc3', turret: '#aa2' },
+  soldier:    { w: 28, h: 28, speed: 1.6, hp: 1, shootRate: 90,  bulletSpeed: 4,   score: 15,  body: '#a33', turret: '#722' },
+  heavy:      { w: 36, h: 36, speed: 0.9, hp: 3, shootRate: 55,  bulletSpeed: 3.5, score: 30,  body: '#833', turret: '#622' },
+  sniper:     { w: 26, h: 26, speed: 1.2, hp: 1, shootRate: 100, bulletSpeed: 7,   score: 25,  body: '#83a', turret: '#629' },
+  demolisher: { w: 32, h: 32, speed: 1.4, hp: 2, shootRate: 40,  bulletSpeed: 4.5, score: 20,  body: '#b72', turret: '#842' },
+};
+
+function pickEnemyType() {
+  // Weighted spawn table that shifts with score
+  const s = game.score;
+  const weights = {
+    scout:      10,
+    soldier:    10,
+    heavy:      s > 50  ? 6  : 2,
+    sniper:     s > 100 ? 6  : (s > 30 ? 3 : 0),
+    demolisher: s > 80  ? 5  : (s > 40 ? 2 : 0),
+  };
+  const total = Object.values(weights).reduce((a, b) => a + b, 0);
+  let r = Math.random() * total;
+  for (const [type, w] of Object.entries(weights)) {
+    r -= w;
+    if (r <= 0) return type;
+  }
+  return 'soldier';
+}
+
+// --- Spawn Enemies ---
+function spawnEnemy() {
+  const side = Math.floor(Math.random() * 4);
+  let x, y, dir;
+  switch (side) {
+    case 0: x = Math.random() * W; y = -TANK_SIZE; dir = 'down'; break;
+    case 1: x = Math.random() * W; y = H + TANK_SIZE; dir = 'up'; break;
+    case 2: x = -TANK_SIZE; y = Math.random() * H; dir = 'right'; break;
+    case 3: x = W + TANK_SIZE; y = Math.random() * H; dir = 'left'; break;
+  }
+
+  const type = pickEnemyType();
+  const def = ENEMY_TYPES[type];
+  const diff = activeDifficulty;
+  const hp = Math.max(1, Math.round(def.hp * diff.enemyHpMult));
+  game.enemies.push({
+    x, y,
+    w: def.w,
+    h: def.h,
+    speed: (def.speed + (Math.random() - 0.5) * 0.3) * diff.enemySpeedMult,
+    dir,
+    type,
+    hp,
+    maxHp: hp,
+    shootCooldown: 30 + Math.floor(Math.random() * def.shootRate * diff.enemyShootRateMult),
+    changeTimer: 60 + Math.floor(Math.random() * 120),
+    aimDir: dir,
+    targetWall: null,
+    jinkTimer: 0,
+  });
+}
+
+// --- Spawn Powerup ---
+function spawnPowerup() {
+  // Try positions until we find one not inside a wall
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const pu = {
+      x: 40 + Math.random() * (W - 80),
+      y: 40 + Math.random() * (H - 80),
+      w: POWERUP_SIZE,
+      h: POWERUP_SIZE,
+      type: 'shield',
+      timer: 480,
+    };
+    let blocked = false;
+    for (const wall of game.walls) {
+      if (rectsCollide(pu, wall)) { blocked = true; break; }
+    }
+    if (!blocked) {
+      game.powerups.push(pu);
+      return;
+    }
+  }
+}
+
+// --- Update ---
+function update(dt) {
+  if (game.state !== 'playing') return;
+
+  const p = game.player;
+  const k = game.keys;
+  game.frameCount += dt;
+
+  // Player movement
+  let moved = false;
+  if (k['ArrowUp'] || k['w']) { p.dir = 'up'; p.y -= p.speed * dt; moved = true; }
+  if (k['ArrowDown'] || k['s']) { p.dir = 'down'; p.y += p.speed * dt; moved = true; }
+  if (k['ArrowLeft'] || k['a']) { p.dir = 'left'; p.x -= p.speed * dt; moved = true; }
+  if (k['ArrowRight'] || k['d']) { p.dir = 'right'; p.x += p.speed * dt; moved = true; }
+
+  // Clamp player
+  p.x = Math.max(p.w / 2, Math.min(W - p.w / 2, p.x));
+  p.y = Math.max(p.h / 2, Math.min(H - p.h / 2, p.y));
+
+  // Player-wall collision
+  resolveWallCollision(p);
+
+  // Timers
+  if (p.shootCooldown > 0) p.shootCooldown -= dt;
+  if (p.shieldTimer > 0) p.shieldTimer -= dt;
+  if (p.invincibleTimer > 0) p.invincibleTimer -= dt;
+  if (game.shakeTimer > 0) game.shakeTimer -= dt;
+
+  // Shooting
+  if (k[' '] && p.shootCooldown <= 0) {
+    const v = dirToVec(p.dir);
+    game.bullets.push({
+      x: p.x + v.x * (p.w / 2 + 4),
+      y: p.y + v.y * (p.h / 2 + 4),
+      vx: v.x * BULLET_SPEED,
+      vy: v.y * BULLET_SPEED,
+    });
+    playSound('shoot');
+    p.shootCooldown = 12;
+  }
+
+  // Update bullets
+  game.bullets = game.bullets.filter(b => {
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    if (b.x < -10 || b.x > W + 10 || b.y < -10 || b.y > H + 10) return false;
+    if (bulletHitWall(b.x, b.y)) return false;
+    return true;
+  });
+
+  // Enemy spawning
+  game.enemySpawnTimer += dt;
+  if (game.enemySpawnTimer >= game.enemySpawnInterval) {
+    spawnEnemy();
+    game.enemySpawnTimer = 0;
+    // Gradually increase difficulty
+    if (game.enemySpawnInterval > activeDifficulty.enemySpawnMin) {
+      game.enemySpawnInterval -= 1;
+    }
+  }
+
+  // Powerup spawning
+  game.powerupTimer += dt;
+  if (game.powerupTimer >= activeDifficulty.powerupInterval) {
+    spawnPowerup();
+    game.powerupTimer = 0;
+  }
+
+  // Update enemies
+  for (const e of game.enemies) {
+    const def = ENEMY_TYPES[e.type];
+
+    // --- Type-specific AI for direction choosing ---
+    e.changeTimer -= dt;
+
+    if (e.type === 'scout') {
+      // Erratic jinking movement - frequently changes direction randomly
+      e.jinkTimer -= dt;
+      if (e.jinkTimer <= 0) {
+        e.jinkTimer = 15 + Math.floor(Math.random() * 25);
+        // 50% chase player, 50% random
+        if (Math.random() < 0.5) {
+          const dirs = ['up', 'down', 'left', 'right'];
+          e.dir = dirs[Math.floor(Math.random() * 4)];
+        } else {
+          aimAtPlayer(e, p);
+        }
+      }
+    } else if (e.type === 'sniper') {
+      // Move perpendicular to player to keep distance, stop when far enough
+      const dx = p.x - e.x;
+      const dy = p.y - e.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (e.changeTimer <= 0) {
+        e.changeTimer = 60 + Math.floor(Math.random() * 80);
+        if (dist < 180) {
+          // Too close - retreat
+          if (Math.abs(dx) > Math.abs(dy)) {
+            e.dir = dx > 0 ? 'left' : 'right';
+          } else {
+            e.dir = dy > 0 ? 'up' : 'down';
+          }
+        } else if (dist > 350) {
+          // Too far - approach
+          aimAtPlayer(e, p);
+        } else {
+          // Good range - strafe perpendicular
+          if (Math.abs(dx) > Math.abs(dy)) {
+            e.dir = Math.random() < 0.5 ? 'up' : 'down';
+          } else {
+            e.dir = Math.random() < 0.5 ? 'left' : 'right';
+          }
+        }
+      }
+      // Sniper always tracks aim toward player (independent of movement)
+      if (Math.abs(dx) > Math.abs(dy)) {
+        e.aimDir = dx > 0 ? 'right' : 'left';
+      } else {
+        e.aimDir = dy > 0 ? 'down' : 'up';
+      }
+    } else if (e.type === 'demolisher') {
+      // Target nearest brick wall; if none left, hunt player
+      if (e.changeTimer <= 0) {
+        e.changeTimer = 40 + Math.floor(Math.random() * 40);
+        const bricks = game.walls.filter(w => w.type === 'brick');
+        if (bricks.length > 0) {
+          // Find nearest brick
+          let nearest = null;
+          let nearDist = Infinity;
+          for (const bk of bricks) {
+            const d = Math.abs(bk.x - e.x) + Math.abs(bk.y - e.y);
+            if (d < nearDist) { nearDist = d; nearest = bk; }
+          }
+          e.targetWall = nearest;
+          const dx = nearest.x - e.x;
+          const dy = nearest.y - e.y;
+          if (Math.abs(dx) > Math.abs(dy)) {
+            e.dir = dx > 0 ? 'right' : 'left';
+          } else {
+            e.dir = dy > 0 ? 'down' : 'up';
+          }
+        } else {
+          e.targetWall = null;
+          aimAtPlayer(e, p);
+        }
+      }
+    } else if (e.type === 'heavy') {
+      // Relentless pursuit - always aims at player, slow but steady
+      if (e.changeTimer <= 0) {
+        e.changeTimer = 50 + Math.floor(Math.random() * 60);
+        aimAtPlayer(e, p);
+      }
+    } else {
+      // soldier: standard chase
+      if (e.changeTimer <= 0) {
+        e.changeTimer = 80 + Math.floor(Math.random() * 100);
+        aimAtPlayer(e, p);
+      }
+    }
+
+    // --- Movement ---
+    const v = dirToVec(e.dir);
+    e.x += v.x * e.speed * dt;
+    e.y += v.y * e.speed * dt;
+
+    // Bounce off screen edges
+    if (e.x < e.w / 2) { e.x = e.w / 2; e.dir = 'right'; }
+    if (e.x > W - e.w / 2) { e.x = W - e.w / 2; e.dir = 'left'; }
+    if (e.y < e.h / 2) { e.y = e.h / 2; e.dir = 'down'; }
+    if (e.y > H - e.h / 2) { e.y = H - e.h / 2; e.dir = 'up'; }
+
+    // Enemy-wall collision: push out and pick new direction
+    const beforeResolveX = e.x;
+    const beforeResolveY = e.y;
+    resolveWallCollision(e);
+    if (e.x !== beforeResolveX || e.y !== beforeResolveY) {
+      const dirs = ['up', 'down', 'left', 'right'].filter(d => d !== e.dir && !wouldHitWall(e, d));
+      if (dirs.length > 0) e.dir = dirs[Math.floor(Math.random() * dirs.length)];
+      e.changeTimer = 20 + Math.floor(Math.random() * 40);
+    }
+
+    // --- Type-specific shooting ---
+    e.shootCooldown -= dt;
+    if (e.shootCooldown <= 0) {
+      let shootDir;
+      let bSpeed = def.bulletSpeed * activeDifficulty.enemyBulletSpeedMult;
+
+      if (e.type === 'sniper') {
+        // Sniper shoots toward player regardless of movement dir
+        shootDir = e.aimDir;
+      } else if (e.type === 'demolisher' && e.targetWall) {
+        // Demolisher shoots toward target wall
+        const dx = e.targetWall.x - e.x;
+        const dy = e.targetWall.y - e.y;
+        if (Math.abs(dx) > Math.abs(dy)) {
+          shootDir = dx > 0 ? 'right' : 'left';
+        } else {
+          shootDir = dy > 0 ? 'down' : 'up';
+        }
+      } else {
+        shootDir = e.dir;
+      }
+
+      const sv = dirToVec(shootDir);
+      game.enemyBullets.push({
+        x: e.x + sv.x * (e.w / 2 + 4),
+        y: e.y + sv.y * (e.h / 2 + 4),
+        vx: sv.x * bSpeed,
+        vy: sv.y * bSpeed,
+      });
+      playSound('enemyShoot');
+      e.shootCooldown = Math.floor(def.shootRate * activeDifficulty.enemyShootRateMult) + Math.floor(Math.random() * 30);
+    }
+  }
+
+  // Helper: aim enemy direction at player
+  function aimAtPlayer(e, p) {
+    const dx = p.x - e.x;
+    const dy = p.y - e.y;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      e.dir = dx > 0 ? 'right' : 'left';
+    } else {
+      e.dir = dy > 0 ? 'down' : 'up';
+    }
+  }
+
+  // Update enemy bullets
+  game.enemyBullets = game.enemyBullets.filter(b => {
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    if (b.x < -10 || b.x > W + 10 || b.y < -10 || b.y > H + 10) return false;
+    if (bulletHitWall(b.x, b.y)) return false;
+    return true;
+  });
+
+  // Bullet-enemy collision
+  game.bullets = game.bullets.filter(b => {
+    for (let i = game.enemies.length - 1; i >= 0; i--) {
+      const e = game.enemies[i];
+      if (circleRectCollide(b.x, b.y, BULLET_RADIUS, e.x, e.y, e.w, e.h)) {
+        const def = ENEMY_TYPES[e.type];
+        e.hp--;
+        spawnParticles(b.x, b.y, '#ff0', 5);
+        if (e.hp <= 0) {
+          spawnParticles(e.x, e.y, def.body, 15);
+          game.score += Math.round(def.score * activeDifficulty.scoreMultiplier);
+          playSound((e.type === 'heavy' || e.type === 'demolisher') ? 'heavyExplode' : 'explode');
+          game.enemies.splice(i, 1);
+        } else {
+          playSound('hit');
+        }
+        return false;
+      }
+    }
+    return true;
+  });
+
+  // Enemy bullet-player collision
+  if (p.invincibleTimer <= 0) {
+    game.enemyBullets = game.enemyBullets.filter(b => {
+      if (circleRectCollide(b.x, b.y, BULLET_RADIUS, p.x, p.y, p.w, p.h)) {
+        if (p.shieldTimer > 0) {
+          p.shieldTimer = 0;
+          spawnParticles(p.x, p.y, '#0af', 12);
+          playSound('shieldBreak');
+          game.shakeTimer = 8;
+          game.shakeIntensity = 3;
+        } else {
+          playerHit();
+        }
+        return false;
+      }
+      return true;
+    });
+  }
+
+  // Enemy-player collision
+  if (p.invincibleTimer <= 0) {
+    for (let i = game.enemies.length - 1; i >= 0; i--) {
+      const e = game.enemies[i];
+      if (rectsCollide(p, e)) {
+        if (p.shieldTimer > 0) {
+          p.shieldTimer = 0;
+          spawnParticles(e.x, e.y, '#f80', 12);
+          playSound('shieldBreak');
+          game.enemies.splice(i, 1);
+          game.score += 5;
+          game.shakeTimer = 8;
+          game.shakeIntensity = 3;
+        } else {
+          spawnParticles(e.x, e.y, '#f44', 10);
+          game.enemies.splice(i, 1);
+          playerHit();
+        }
+        break;
+      }
+    }
+  }
+
+  // Powerup collection
+  game.powerups = game.powerups.filter(pu => {
+    pu.timer -= dt;
+    if (pu.timer <= 0) return false;
+    if (rectsCollide(p, pu)) {
+      if (pu.type === 'shield') {
+        p.shieldTimer = 480; // 8 seconds at 60fps
+        spawnParticles(pu.x, pu.y, '#0af', 10);
+        playSound('shieldPickup');
+      }
+      return false;
+    }
+    return true;
+  });
+
+  // Update particles
+  game.particles = game.particles.filter(pt => {
+    pt.x += pt.vx * dt;
+    pt.y += pt.vy * dt;
+    const drag = Math.pow(0.96, dt);
+    pt.vx *= drag;
+    pt.vy *= drag;
+    pt.life -= dt;
+    return pt.life > 0;
+  });
+
+  // Remove off-screen enemies (generous bounds)
+  game.enemies = game.enemies.filter(e =>
+    e.x > -100 && e.x < W + 100 && e.y > -100 && e.y < H + 100
+  );
+}
+
+function playerHit() {
+  const p = game.player;
+  game.lives--;
+  spawnParticles(p.x, p.y, '#f44', 20);
+  playSound('playerHit');
+  game.shakeTimer = 15;
+  game.shakeIntensity = 6;
+
+  if (game.lives <= 0) {
+    game.state = 'gameover';
+    playSound('gameOver');
+  } else {
+    p.invincibleTimer = 120; // 2 seconds invincibility
+    p.x = W / 2;
+    p.y = H / 2;
+  }
+}
+
+// --- Color Helpers ---
+function colorShift(hex, amount) {
+  // Lighten or darken a hex color
+  let r = parseInt(hex.slice(1, 2), 16) * 17;
+  let g = parseInt(hex.slice(2, 3), 16) * 17;
+  let b = parseInt(hex.slice(3, 4), 16) * 17;
+  if (hex.length === 7) {
+    r = parseInt(hex.slice(1, 3), 16);
+    g = parseInt(hex.slice(3, 5), 16);
+    b = parseInt(hex.slice(5, 7), 16);
+  }
+  r = Math.max(0, Math.min(255, r + amount));
+  g = Math.max(0, Math.min(255, g + amount));
+  b = Math.max(0, Math.min(255, b + amount));
+  return `rgb(${r},${g},${b})`;
+}
+
+// --- Drawing ---
+
+// Draw the tank body (hull + treads), used by both drawTank and drawTankSplit
+function drawTankBody(w, h, color) {
+  const lighter = colorShift(color, 30);
+  const darker = colorShift(color, -40);
+  const darkest = colorShift(color, -70);
+
+  // --- Track assembly (left) ---
+  const tw = Math.max(4, w * 0.18); // track width
+  const tl = h + 4; // track length
+  const tlx = -w / 2 - tw + 1;
+  const tly = -tl / 2;
+
+  // Track outer shell
+  ctx.fillStyle = '#2a2a2a';
+  // Rounded track shape
+  const tr = tw / 2;
+  ctx.beginPath();
+  ctx.moveTo(tlx + tr, tly);
+  ctx.lineTo(tlx + tw - tr, tly);
+  ctx.arc(tlx + tw - tr, tly + tr, tr, -Math.PI / 2, 0);
+  ctx.lineTo(tlx + tw, tly + tl - tr);
+  ctx.arc(tlx + tw - tr, tly + tl - tr, tr, 0, Math.PI / 2);
+  ctx.lineTo(tlx + tr, tly + tl);
+  ctx.arc(tlx + tr, tly + tl - tr, tr, Math.PI / 2, Math.PI);
+  ctx.lineTo(tlx, tly + tr);
+  ctx.arc(tlx + tr, tly + tr, tr, Math.PI, -Math.PI / 2);
+  ctx.fill();
+
+  // Track segments (animated)
+  ctx.fillStyle = '#383838';
+  const segH = 5;
+  const segGap = 7;
+  const offset = (game.frameCount * 1.5) % segGap;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(tlx, tly, tw, tl);
+  ctx.clip();
+  for (let sy = tly - segGap + offset; sy < tly + tl; sy += segGap) {
+    ctx.fillRect(tlx + 1, sy, tw - 2, segH - 1);
+  }
+  ctx.restore();
+
+  // Drive wheels (circles at track ends)
+  ctx.fillStyle = '#444';
+  ctx.beginPath(); ctx.arc(tlx + tw / 2, tly + tr + 1, tr * 0.7, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(tlx + tw / 2, tly + tl - tr - 1, tr * 0.7, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#555';
+  ctx.beginPath(); ctx.arc(tlx + tw / 2, tly + tr + 1, tr * 0.3, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(tlx + tw / 2, tly + tl - tr - 1, tr * 0.3, 0, Math.PI * 2); ctx.fill();
+
+  // --- Track assembly (right) ---
+  const trx = w / 2 - 1;
+  ctx.fillStyle = '#2a2a2a';
+  ctx.beginPath();
+  ctx.moveTo(trx + tr, tly);
+  ctx.lineTo(trx + tw - tr, tly);
+  ctx.arc(trx + tw - tr, tly + tr, tr, -Math.PI / 2, 0);
+  ctx.lineTo(trx + tw, tly + tl - tr);
+  ctx.arc(trx + tw - tr, tly + tl - tr, tr, 0, Math.PI / 2);
+  ctx.lineTo(trx + tr, tly + tl);
+  ctx.arc(trx + tr, tly + tl - tr, tr, Math.PI / 2, Math.PI);
+  ctx.lineTo(trx, tly + tr);
+  ctx.arc(trx + tr, tly + tr, tr, Math.PI, -Math.PI / 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#383838';
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(trx, tly, tw, tl);
+  ctx.clip();
+  for (let sy = tly - segGap + offset; sy < tly + tl; sy += segGap) {
+    ctx.fillRect(trx + 1, sy, tw - 2, segH - 1);
+  }
+  ctx.restore();
+
+  ctx.fillStyle = '#444';
+  ctx.beginPath(); ctx.arc(trx + tw / 2, tly + tr + 1, tr * 0.7, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(trx + tw / 2, tly + tl - tr - 1, tr * 0.7, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#555';
+  ctx.beginPath(); ctx.arc(trx + tw / 2, tly + tr + 1, tr * 0.3, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(trx + tw / 2, tly + tl - tr - 1, tr * 0.3, 0, Math.PI * 2); ctx.fill();
+
+  // --- Hull body ---
+  // Shadow underneath
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(-w / 2 + 1, -h / 2 + 2, w - 2, h);
+
+  // Main hull plate
+  ctx.fillStyle = color;
+  ctx.fillRect(-w / 2, -h / 2, w, h);
+
+  // Top bevel (lighter edge)
+  ctx.fillStyle = lighter;
+  ctx.fillRect(-w / 2, -h / 2, w, 3);
+  ctx.fillRect(-w / 2, -h / 2, 3, h);
+
+  // Bottom bevel (darker edge)
+  ctx.fillStyle = darker;
+  ctx.fillRect(-w / 2, h / 2 - 2, w, 2);
+  ctx.fillRect(w / 2 - 2, -h / 2, 2, h);
+
+  // Hull center seam line
+  ctx.strokeStyle = darker;
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(-w / 4, -h / 2 + 3);
+  ctx.lineTo(-w / 4, h / 2 - 3);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(w / 4, -h / 2 + 3);
+  ctx.lineTo(w / 4, h / 2 - 3);
+  ctx.stroke();
+
+  // Rear armor plate (thicker at back)
+  ctx.fillStyle = darkest;
+  ctx.fillRect(-w / 2 + 2, h / 2 - 5, w - 4, 4);
+
+  // Front slope
+  ctx.fillStyle = lighter;
+  ctx.beginPath();
+  ctx.moveTo(-w / 2 + 2, -h / 2 + 2);
+  ctx.lineTo(0, -h / 2 + 5);
+  ctx.lineTo(w / 2 - 2, -h / 2 + 2);
+  ctx.closePath();
+  ctx.fill();
+
+  // Exhaust pipes (rear)
+  ctx.fillStyle = '#444';
+  ctx.fillRect(-w / 4 - 2, h / 2 - 2, 4, 4);
+  ctx.fillRect(w / 4 - 2, h / 2 - 2, 4, 4);
+  ctx.fillStyle = '#333';
+  ctx.fillRect(-w / 4 - 1, h / 2 - 1, 2, 3);
+  ctx.fillRect(w / 4 - 1, h / 2 - 1, 2, 3);
+
+  // Side skirt armor panels
+  ctx.fillStyle = darker;
+  ctx.fillRect(-w / 2, -h / 3, 2, h * 0.66);
+  ctx.fillRect(w / 2 - 2, -h / 3, 2, h * 0.66);
+
+  // Hull rivets
+  ctx.fillStyle = lighter;
+  const rivetR = Math.max(1, w * 0.035);
+  const positions = [
+    [-w / 2 + 5, -h / 2 + 5],
+    [w / 2 - 5, -h / 2 + 5],
+    [-w / 2 + 5, h / 2 - 5],
+    [w / 2 - 5, h / 2 - 5],
+  ];
+  for (const [rx, ry] of positions) {
+    ctx.beginPath();
+    ctx.arc(rx, ry, rivetR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// Draw turret + barrel assembly
+function drawTankTurret(w, h, turretColor) {
+  const tLighter = colorShift(turretColor, 35);
+  const tDarker = colorShift(turretColor, -35);
+  const turretR = w * 0.32;
+  const barrelW = Math.max(4, w * 0.16);
+  const barrelL = h / 2 + w * 0.35;
+
+  // Barrel shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  ctx.fillRect(-barrelW / 2 + 1, -barrelL + 1, barrelW, barrelL);
+
+  // Barrel main
+  ctx.fillStyle = tDarker;
+  ctx.fillRect(-barrelW / 2, -barrelL, barrelW, barrelL);
+
+  // Barrel highlight stripe
+  ctx.fillStyle = tLighter;
+  ctx.fillRect(-barrelW / 2, -barrelL, 1.5, barrelL);
+
+  // Barrel rings
+  ctx.fillStyle = turretColor;
+  const ringSpacing = barrelL / 4;
+  for (let ri = 1; ri < 4; ri++) {
+    ctx.fillRect(-barrelW / 2 - 1, -barrelL + ri * ringSpacing - 1, barrelW + 2, 2);
+  }
+
+  // Muzzle brake at tip
+  ctx.fillStyle = '#444';
+  ctx.fillRect(-barrelW / 2 - 1.5, -barrelL - 2, barrelW + 3, 4);
+  ctx.fillStyle = '#333';
+  ctx.fillRect(-barrelW / 2 - 0.5, -barrelL - 1, barrelW + 1, 2);
+
+  // Turret base shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.arc(1, 1, turretR + 1, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Turret ring (outer)
+  ctx.fillStyle = tDarker;
+  ctx.beginPath();
+  ctx.arc(0, 0, turretR + 1.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Turret main dome
+  ctx.fillStyle = turretColor;
+  ctx.beginPath();
+  ctx.arc(0, 0, turretR, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Turret highlight (top-left light)
+  ctx.fillStyle = tLighter;
+  ctx.beginPath();
+  ctx.arc(-turretR * 0.2, -turretR * 0.2, turretR * 0.55, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Turret center
+  ctx.fillStyle = turretColor;
+  ctx.beginPath();
+  ctx.arc(0, 0, turretR * 0.4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Hatch detail
+  ctx.strokeStyle = tDarker;
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.arc(0, 0, turretR * 0.25, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Hatch handle
+  ctx.strokeStyle = tLighter;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(-turretR * 0.15, 0);
+  ctx.lineTo(turretR * 0.15, 0);
+  ctx.stroke();
+}
+
+function drawTank(x, y, w, h, dir, color, turretColor) {
+  const angle = dirToAngle(dir);
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle + Math.PI / 2);
+  drawTankBody(w, h, color);
+  drawTankTurret(w, h, turretColor);
+  ctx.restore();
+}
+
+// Draws a tank where body faces bodyDir but turret/barrel faces aimDir (for sniper)
+function drawTankSplit(x, y, w, h, bodyDir, aimDir, color, turretColor) {
+  const bodyAngle = dirToAngle(bodyDir) + Math.PI / 2;
+  const aimAngle = dirToAngle(aimDir) + Math.PI / 2;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.save();
+  ctx.rotate(bodyAngle);
+  drawTankBody(w, h, color);
+  ctx.restore();
+  ctx.save();
+  ctx.rotate(aimAngle);
+  drawTankTurret(w, h, turretColor);
+  ctx.restore();
+  ctx.restore();
+}
+
+function drawShield(x, y, size) {
+  ctx.save();
+  const t = game.frameCount;
+  const r1 = size * 0.78;
+  const r2 = size * 0.88;
+
+  // Outer glow
+  const grad = ctx.createRadialGradient(x, y, r1 * 0.8, x, y, r2 + 4);
+  grad.addColorStop(0, 'rgba(0,170,255,0)');
+  grad.addColorStop(0.7, `rgba(0,170,255,${0.08 + 0.05 * Math.sin(t * 0.08)})`);
+  grad.addColorStop(1, 'rgba(0,170,255,0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(x, y, r2 + 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Inner ring
+  ctx.strokeStyle = `rgba(0, 170, 255, ${0.5 + 0.3 * Math.sin(t * 0.1)})`;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([4, 4]);
+  ctx.lineDashOffset = -t * 0.5;
+  ctx.beginPath();
+  ctx.arc(x, y, r1, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Outer ring
+  ctx.strokeStyle = `rgba(0, 200, 255, ${0.35 + 0.2 * Math.sin(t * 0.15 + 1)})`;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 3]);
+  ctx.lineDashOffset = t * 0.7;
+  ctx.beginPath();
+  ctx.arc(x, y, r2, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.setLineDash([]);
+
+  // Hex sparkle nodes on the ring
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + t * 0.02;
+    const nx = x + Math.cos(a) * r1;
+    const ny = y + Math.sin(a) * r1;
+    const pulse = 1.5 + Math.sin(t * 0.15 + i) * 1;
+    ctx.fillStyle = `rgba(100,220,255,${0.4 + 0.3 * Math.sin(t * 0.12 + i * 1.2)})`;
+    ctx.beginPath();
+    ctx.arc(nx, ny, pulse, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function draw() {
+  // Reset to base HiDPI + scaling transform
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(dpr * canvasScale, 0, 0, dpr * canvasScale, 0, 0);
+  ctx.save();
+
+  // Screen shake
+  if (game.shakeTimer > 0) {
+    const sx = (Math.random() - 0.5) * game.shakeIntensity;
+    const sy = (Math.random() - 0.5) * game.shakeIntensity;
+    ctx.translate(sx, sy);
+  }
+
+  // Background
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid lines
+  ctx.strokeStyle = '#252540';
+  ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 40) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = 0; y < H; y += 40) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+
+  if (game.state === 'title') {
+    drawTitle();
+    ctx.restore();
+    return;
+  }
+
+  if (game.state === 'difficulty') {
+    drawDifficulty();
+    ctx.restore();
+    return;
+  }
+
+  if (game.state === 'gameover') {
+    drawGameWorld();
+    drawGameOver();
+    ctx.restore();
+    return;
+  }
+
+  drawGameWorld();
+  drawHUD();
+  ctx.restore();
+}
+
+function drawGameWorld() {
+  const p = game.player;
+
+  // Powerups
+  for (const pu of game.powerups) {
+    const pulse = 1 + 0.1 * Math.sin(game.frameCount * 0.08);
+    const alpha = pu.timer < 60 ? (Math.sin(game.frameCount * 0.3) > 0 ? 1 : 0.3) : 1;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(pu.x, pu.y);
+    ctx.scale(pulse, pulse);
+
+    // Shield icon
+    ctx.fillStyle = '#0af';
+    ctx.beginPath();
+    ctx.moveTo(0, -POWERUP_SIZE / 2);
+    ctx.lineTo(POWERUP_SIZE / 2, -POWERUP_SIZE / 4);
+    ctx.lineTo(POWERUP_SIZE / 2, POWERUP_SIZE / 4);
+    ctx.lineTo(0, POWERUP_SIZE / 2);
+    ctx.lineTo(-POWERUP_SIZE / 2, POWERUP_SIZE / 4);
+    ctx.lineTo(-POWERUP_SIZE / 2, -POWERUP_SIZE / 4);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 12px Courier New';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('S', 0, 0);
+
+    ctx.restore();
+  }
+
+  // Walls
+  for (const wall of game.walls) {
+    const wx = wall.x - wall.w / 2;
+    const wy = wall.y - wall.h / 2;
+
+    if (wall.type === 'brick') {
+      // Brick pattern
+      const brickColor = wall.hp === 2 ? '#a65' : '#843';
+      const mortarColor = wall.hp === 2 ? '#754' : '#532';
+      ctx.fillStyle = mortarColor;
+      ctx.fillRect(wx, wy, wall.w, wall.h);
+      ctx.fillStyle = brickColor;
+      // Row 1: two bricks
+      ctx.fillRect(wx + 1, wy + 1, wall.w / 2 - 2, wall.h / 4 - 1);
+      ctx.fillRect(wx + wall.w / 2 + 1, wy + 1, wall.w / 2 - 2, wall.h / 4 - 1);
+      // Row 2: offset bricks
+      ctx.fillRect(wx + 1, wy + wall.h / 4 + 1, wall.w / 3 - 1, wall.h / 4 - 1);
+      ctx.fillRect(wx + wall.w / 3 + 1, wy + wall.h / 4 + 1, wall.w / 3 - 1, wall.h / 4 - 1);
+      ctx.fillRect(wx + 2 * wall.w / 3 + 1, wy + wall.h / 4 + 1, wall.w / 3 - 2, wall.h / 4 - 1);
+      // Row 3
+      ctx.fillRect(wx + 1, wy + wall.h / 2 + 1, wall.w / 2 - 2, wall.h / 4 - 1);
+      ctx.fillRect(wx + wall.w / 2 + 1, wy + wall.h / 2 + 1, wall.w / 2 - 2, wall.h / 4 - 1);
+      // Row 4
+      ctx.fillRect(wx + 1, wy + 3 * wall.h / 4 + 1, wall.w / 3 - 1, wall.h / 4 - 2);
+      ctx.fillRect(wx + wall.w / 3 + 1, wy + 3 * wall.h / 4 + 1, wall.w / 3 - 1, wall.h / 4 - 2);
+      ctx.fillRect(wx + 2 * wall.w / 3 + 1, wy + 3 * wall.h / 4 + 1, wall.w / 3 - 2, wall.h / 4 - 2);
+    } else if (wall.type === 'steel') {
+      // Steel plate with rivets
+      ctx.fillStyle = '#667';
+      ctx.fillRect(wx, wy, wall.w, wall.h);
+      ctx.fillStyle = '#778';
+      ctx.fillRect(wx + 2, wy + 2, wall.w - 4, wall.h - 4);
+      ctx.fillStyle = '#556';
+      ctx.fillRect(wx + 4, wy + 4, wall.w - 8, wall.h - 8);
+      // Rivets
+      ctx.fillStyle = '#889';
+      const r = 2.5;
+      for (const [rx, ry] of [[6, 6], [wall.w - 6, 6], [6, wall.h - 6], [wall.w - 6, wall.h - 6]]) {
+        ctx.beginPath();
+        ctx.arc(wx + rx, wy + ry, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Cross mark
+      ctx.strokeStyle = '#99a';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(wx + wall.w / 2 - 6, wy + wall.h / 2);
+      ctx.lineTo(wx + wall.w / 2 + 6, wy + wall.h / 2);
+      ctx.moveTo(wx + wall.w / 2, wy + wall.h / 2 - 6);
+      ctx.lineTo(wx + wall.w / 2, wy + wall.h / 2 + 6);
+      ctx.stroke();
+    } else if (wall.type === 'concrete') {
+      // Concrete barrier with diagonal stripes
+      ctx.fillStyle = '#555';
+      ctx.fillRect(wx, wy, wall.w, wall.h);
+      ctx.fillStyle = '#4a4a4a';
+      ctx.fillRect(wx + 2, wy + 2, wall.w - 4, wall.h - 4);
+      // Hazard stripes
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(wx, wy, wall.w, wall.h);
+      ctx.clip();
+      ctx.strokeStyle = 'rgba(255,200,0,0.3)';
+      ctx.lineWidth = 4;
+      for (let s = -wall.w; s < wall.w * 2; s += 12) {
+        ctx.beginPath();
+        ctx.moveTo(wx + s, wy);
+        ctx.lineTo(wx + s + wall.h, wy + wall.h);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  // Enemies
+  for (const e of game.enemies) {
+    const def = ENEMY_TYPES[e.type];
+
+    // Sniper draws with aim direction for turret visual
+    if (e.type === 'sniper') {
+      // Body faces movement, but we draw turret aimed at player
+      drawTankSplit(e.x, e.y, e.w, e.h, e.dir, e.aimDir, def.body, def.turret);
+    } else {
+      drawTank(e.x, e.y, e.w, e.h, e.dir, def.body, def.turret);
+    }
+
+    // Type indicator letter
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.font = 'bold 9px Courier New';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const label = e.type[0].toUpperCase();
+    ctx.fillText(label, e.x, e.y);
+
+    // HP bar for multi-hp enemies
+    if (e.maxHp > 1 && e.hp < e.maxHp) {
+      ctx.fillStyle = '#400';
+      ctx.fillRect(e.x - 15, e.y - e.h / 2 - 8, 30, 4);
+      ctx.fillStyle = def.body;
+      ctx.fillRect(e.x - 15, e.y - e.h / 2 - 8, 30 * (e.hp / e.maxHp), 4);
+    }
+  }
+
+  // Player
+  if (p.invincibleTimer <= 0 || Math.floor(game.frameCount / 4) % 2 === 0) {
+    drawTank(p.x, p.y, p.w, p.h, p.dir, '#4a4', '#2a2');
+    if (p.shieldTimer > 0) {
+      drawShield(p.x, p.y, p.w);
+    }
+  }
+
+  // Player bullets
+  for (const b of game.bullets) {
+    // Trail glow
+    const grad = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, BULLET_RADIUS * 3);
+    grad.addColorStop(0, 'rgba(255,255,100,0.3)');
+    grad.addColorStop(1, 'rgba(255,255,0,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, BULLET_RADIUS * 3, 0, Math.PI * 2);
+    ctx.fill();
+    // Core
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, BULLET_RADIUS * 0.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ff0';
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, BULLET_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Enemy bullets
+  for (const b of game.enemyBullets) {
+    const grad = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, BULLET_RADIUS * 3);
+    grad.addColorStop(0, 'rgba(255,100,100,0.3)');
+    grad.addColorStop(1, 'rgba(255,50,50,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, BULLET_RADIUS * 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fcc';
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, BULLET_RADIUS * 0.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#f66';
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, BULLET_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Particles
+  for (const pt of game.particles) {
+    ctx.globalAlpha = pt.life / pt.maxLife;
+    ctx.fillStyle = pt.color;
+    ctx.fillRect(pt.x - pt.size / 2, pt.y - pt.size / 2, pt.size, pt.size);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawHUD() {
+  // Score
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px Courier New';
+  ctx.textAlign = 'left';
+  ctx.fillText(`SCORE: ${game.score}`, 15, 30);
+
+  // Difficulty badge
+  ctx.fillStyle = activeDifficulty.color;
+  ctx.font = 'bold 12px Courier New';
+  ctx.fillText(activeDifficulty.name, 15, 50);
+  if (activeDifficulty.scoreMultiplier !== 1) {
+    ctx.fillStyle = '#888';
+    ctx.fillText(`x${activeDifficulty.scoreMultiplier}`, 15 + ctx.measureText(activeDifficulty.name).width + 8, 50);
+  }
+
+  // Lives
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px Courier New';
+  ctx.textAlign = 'right';
+  ctx.fillText('LIVES:', W - 100, 30);
+  for (let i = 0; i < game.lives; i++) {
+    drawTank(W - 80 + i * 28, 26, 14, 14, 'up', '#4a4', '#2a2');
+  }
+
+  // Shield indicator
+  if (game.player.shieldTimer > 0) {
+    const sec = Math.ceil(game.player.shieldTimer / 60);
+    ctx.fillStyle = '#0af';
+    ctx.textAlign = 'left';
+    ctx.fillText(`SHIELD: ${sec}s`, 15, 68);
+  }
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 48px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillText('BATTLE TANK', W / 2, H / 2 - 80);
+
+  ctx.font = '16px Courier New';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('Arrow Keys / WASD to move  |  SPACE to shoot', W / 2, H / 2 - 20);
+
+  // Enemy roster
+  const roster = [
+    { type: 'scout',      label: 'Scout',      desc: 'Fast & erratic' },
+    { type: 'soldier',    label: 'Soldier',     desc: 'All-rounder' },
+    { type: 'heavy',      label: 'Heavy',       desc: 'Slow & tough' },
+    { type: 'sniper',     label: 'Sniper',      desc: 'Keeps distance' },
+    { type: 'demolisher', label: 'Demolisher',  desc: 'Destroys walls' },
+  ];
+  const startX = W / 2 - (roster.length - 1) * 80;
+  roster.forEach((r, i) => {
+    const rx = startX + i * 160;
+    const ry = H / 2 + 30;
+    const d = ENEMY_TYPES[r.type];
+    drawTank(rx, ry, d.w * 0.8, d.h * 0.8, 'up', d.body, d.turret);
+    ctx.fillStyle = d.body;
+    ctx.font = 'bold 11px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText(r.label, rx, ry + 22);
+    ctx.fillStyle = '#888';
+    ctx.font = '10px Courier New';
+    ctx.fillText(r.desc, rx, ry + 34);
+  });
+
+  ctx.font = 'bold 20px Courier New';
+  ctx.fillStyle = `rgba(255,255,255,${0.5 + 0.5 * Math.sin(Date.now() * 0.004)})`;
+  ctx.fillText('Press ENTER to start', W / 2, H / 2 + 100);
+
+  // Draw player tank
+  drawTank(W / 2, H / 2 - 150, 40, 40, 'up', '#4a4', '#2a2');
+
+  // Credit line at the bottom
+  ctx.font = '13px Courier New';
+  ctx.fillStyle = '#777';
+  ctx.textAlign = 'center';
+  ctx.fillText('made with nostalgic \u2764\uFE0F by bhuvi', W / 2, H - 20);
+}
+
+function drawDifficulty() {
+  // Title
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 36px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillText('SELECT DIFFICULTY', W / 2, 80);
+
+  const startY = 150;
+  const rowH = 100;
+
+  for (let i = 0; i < DIFFICULTIES.length; i++) {
+    const d = DIFFICULTIES[i];
+    const y = startY + i * rowH;
+    const selected = i === selectedDifficulty;
+
+    // Selection highlight box
+    if (selected) {
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      ctx.fillRect(W / 2 - 280, y - 20, 560, 80);
+      ctx.strokeStyle = d.color;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(W / 2 - 280, y - 20, 560, 80);
+
+      // Animated arrow
+      const bounce = Math.sin(Date.now() * 0.006) * 4;
+      ctx.fillStyle = d.color;
+      ctx.font = 'bold 24px Courier New';
+      ctx.textAlign = 'right';
+      ctx.fillText('>', W / 2 - 240 + bounce, y + 18);
+    }
+
+    // Difficulty name
+    ctx.fillStyle = selected ? d.color : '#666';
+    ctx.font = `bold 26px Courier New`;
+    ctx.textAlign = 'left';
+    ctx.fillText(d.name, W / 2 - 220, y + 16);
+
+    // Description
+    ctx.fillStyle = selected ? '#ccc' : '#555';
+    ctx.font = '14px Courier New';
+    ctx.fillText(d.desc, W / 2 - 220, y + 40);
+
+    // Stats on the right side
+    ctx.textAlign = 'right';
+    ctx.font = '12px Courier New';
+    ctx.fillStyle = selected ? '#aaa' : '#444';
+    ctx.fillText(`Lives: ${d.lives}  |  Score: x${d.scoreMultiplier}`, W / 2 + 260, y + 10);
+
+    // Speed bar visualization
+    const barX = W / 2 + 120;
+    const barY = y + 25;
+    const barW = 140;
+    const barH = 6;
+    ctx.fillStyle = selected ? '#333' : '#1f1f1f';
+    ctx.fillRect(barX, barY, barW, barH);
+    const speedFill = d.enemySpeedMult / 1.5;
+    ctx.fillStyle = selected ? d.color : '#444';
+    ctx.fillRect(barX, barY, barW * Math.min(1, speedFill), barH);
+    ctx.textAlign = 'left';
+    ctx.fillText('Enemy Speed', barX, barY + 18);
+  }
+
+  // Footer
+  ctx.textAlign = 'center';
+  ctx.font = '14px Courier New';
+  ctx.fillStyle = '#666';
+  ctx.fillText('UP/DOWN to select  |  ENTER to confirm  |  ESC to go back', W / 2, H - 40);
+
+  // Animated prompt
+  ctx.font = 'bold 18px Courier New';
+  ctx.fillStyle = `rgba(255,255,255,${0.4 + 0.4 * Math.sin(Date.now() * 0.004)})`;
+  ctx.fillText('Press ENTER to begin', W / 2, H - 70);
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = '#f44';
+  ctx.font = 'bold 48px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillText('GAME OVER', W / 2, H / 2 - 40);
+
+  ctx.fillStyle = activeDifficulty.color;
+  ctx.font = 'bold 16px Courier New';
+  ctx.fillText(activeDifficulty.name, W / 2, H / 2 - 5);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px Courier New';
+  ctx.fillText(`FINAL SCORE: ${game.score}`, W / 2, H / 2 + 30);
+
+  ctx.font = '18px Courier New';
+  ctx.fillStyle = `rgba(255,255,255,${0.5 + 0.5 * Math.sin(Date.now() * 0.004)})`;
+  ctx.fillText('Press ENTER to continue', W / 2, H / 2 + 80);
+}
+
+// --- Game Loop (delta-time) ---
+let lastTime = performance.now();
+
+function loop(now) {
+  const elapsed = now - lastTime;
+  lastTime = now;
+  // dt = 1.0 at 60fps (16.667ms per frame), clamped to avoid spiral of death
+  const dt = Math.min(elapsed / 16.667, 3);
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
