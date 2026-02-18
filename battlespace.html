@@ -269,6 +269,7 @@ const ENEMY_TYPES = {
   bomber:      { w: 34, h: 30, speed: 1.2, hp: 3, shootRate: 70,  bulletSpeed: 3,   score: 40,  color: '#f80', minScore: 200 },
   interceptor: { w: 22, h: 18, speed: 5,   hp: 1, shootRate: 0,   bulletSpeed: 0,   score: 25,  color: '#ff0', minScore: 100 },
   cruiser:     { w: 44, h: 36, speed: 0.8, hp: 5, shootRate: 40,  bulletSpeed: 5,   score: 60,  color: '#a22', minScore: 400 },
+  phantom:     { w: 30, h: 24, speed: 3.5, hp: 4, shootRate: 50,  bulletSpeed: 6,   score: 80,  color: '#6ef', minScore: 300 },
 };
 
 // --- Difficulty Presets ---
@@ -337,6 +338,15 @@ const DIFFICULTIES = [
 
 let selectedDifficulty = 1;
 let activeDifficulty = DIFFICULTIES[1];
+
+// Score thresholds for auto-promoting difficulty (per starting level)
+// e.g. starting on EASY: promote to NORMAL at 300, HARD at 700, NIGHTMARE at 1200
+const PROMOTE_THRESHOLDS = [
+  [1650, 3300, 5000], // starting EASY → NIGHTMARE at 5000
+  [2500, 5000],       // starting NORMAL → NIGHTMARE at 5000
+  [2500],             // starting HARD → NIGHTMARE at 2500
+  [],                 // starting NIGHTMARE (no promotion)
+];
 
 // --- Starfield ---
 // Star color palette
@@ -484,6 +494,9 @@ function resetGame() {
     shakeTimer: 0,
     shakeIntensity: 0,
     laserActive: false,
+    startDifficulty: selectedDifficulty,
+    difficultyIndex: selectedDifficulty,
+    lastPromoteScore: 0,
   };
 }
 
@@ -587,8 +600,9 @@ function getAvailableEnemyTypes() {
 
 function spawnEnemy() {
   const available = getAvailableEnemyTypes();
-  // Weight: newer types are less common
+  // Weight: newer types are less common, phantom is rare
   const weights = available.map((name, i) => {
+    if (name === 'phantom') return 0.5;
     if (i === available.length - 1 && available.length > 1) return 1;
     if (i === available.length - 2 && available.length > 2) return 2;
     return 3;
@@ -622,6 +636,15 @@ function spawnEnemy() {
     phase: Math.random() * Math.PI * 2, // for sine movement
     alive: true,
   };
+
+  // Phantom-specific state
+  if (chosen === 'phantom') {
+    enemy.evadeTimer = 0;
+    enemy.evadeDir = 0;
+    enemy.attackPhase = Math.random() * Math.PI * 2;
+    enemy.cloakTimer = 0;
+    enemy.cloakAlpha = 1;
+  }
 
   game.enemies.push(enemy);
 }
@@ -824,6 +847,102 @@ function updateEnemyAI(enemy, dt) {
         }
       }
       break;
+
+    case 'phantom':
+      // Evasive ace — detects incoming missiles and dodges, strafes around player
+      {
+        // Initialize phantom-specific state
+        if (enemy.evadeTimer === undefined) {
+          enemy.evadeTimer = 0;
+          enemy.evadeDir = 0;
+          enemy.attackPhase = 0;
+          enemy.cloakTimer = 0;
+          enemy.cloakAlpha = 1;
+        }
+
+        // --- Missile evasion: scan for nearby homing bullets ---
+        let dodging = false;
+        for (const b of game.bullets) {
+          if (!b.homing) continue;
+          const d = dist(b.x, b.y, enemy.x, enemy.y);
+          if (d < 150) {
+            // Dodge perpendicular to missile approach vector
+            const mAngle = Math.atan2(b.vy, b.vx);
+            const perpDir = (enemy.y > b.y) ? 1 : -1;
+            enemy.evadeDir = perpDir;
+            enemy.evadeTimer = 20;
+            dodging = true;
+            break;
+          }
+        }
+
+        // Also evade non-homing bullets that are close and heading toward us
+        if (!dodging) {
+          for (const b of game.bullets) {
+            if (b.homing) continue;
+            const d = dist(b.x, b.y, enemy.x, enemy.y);
+            if (d < 80 && b.vx > 0 && b.x < enemy.x) {
+              enemy.evadeDir = (enemy.y > b.y) ? 1 : -1;
+              enemy.evadeTimer = 10;
+              dodging = true;
+              break;
+            }
+          }
+        }
+
+        if (enemy.evadeTimer > 0) {
+          // Evade vertically
+          enemy.y += enemy.evadeDir * enemy.speed * 1.8 * dt;
+          enemy.x -= enemy.speed * 0.3 * dt;
+          enemy.evadeTimer -= dt;
+        } else {
+          // Normal behavior: strafe around player at medium range
+          enemy.attackPhase += 0.03 * dt;
+          const targetX = p.x + 200 + Math.sin(enemy.attackPhase * 0.7) * 80;
+          const targetY = p.y + Math.sin(enemy.attackPhase) * 150;
+          const toX = targetX - enemy.x;
+          const toY = targetY - enemy.y;
+          const tDist = Math.sqrt(toX * toX + toY * toY);
+          if (tDist > 5) {
+            enemy.x += (toX / tDist) * enemy.speed * dt;
+            enemy.y += (toY / tDist) * enemy.speed * dt;
+          }
+        }
+
+        // Clamp X — don't fly off left
+        enemy.x = Math.max(W * 0.3, Math.min(W + enemy.w, enemy.x));
+
+        // Cloaking: flicker visibility
+        enemy.cloakTimer += dt;
+        if (enemy.cloakTimer > 100) {
+          // Brief cloak
+          enemy.cloakAlpha = 0.15 + 0.1 * Math.sin(enemy.cloakTimer * 0.5);
+          if (enemy.cloakTimer > 130) enemy.cloakTimer = 0;
+        } else {
+          enemy.cloakAlpha = 0.7 + 0.3 * Math.sin(enemy.cloakTimer * 0.1);
+        }
+
+        // Shoot aimed at player
+        if (enemy.shootRate > 0) {
+          enemy.shootTimer -= dt;
+          if (enemy.shootTimer <= 0) {
+            enemy.shootTimer = enemy.shootRate + Math.random() * 20;
+            const angle = Math.atan2(p.y - enemy.y, p.x - enemy.x);
+            // Double shot
+            for (let s = -1; s <= 1; s += 2) {
+              game.enemyBullets.push({
+                x: enemy.x - enemy.w / 2,
+                y: enemy.y + s * 5,
+                vx: Math.cos(angle) * enemy.bulletSpeed,
+                vy: Math.sin(angle) * enemy.bulletSpeed,
+                size: 3,
+              });
+            }
+            playSound('enemyShoot');
+          }
+        }
+      }
+      break;
   }
 
   // Clamp Y
@@ -835,6 +954,19 @@ function update(dt) {
   if (game.state !== 'playing') return;
 
   game.frameCount += dt;
+
+  // Auto-promote difficulty based on score
+  const thresholds = PROMOTE_THRESHOLDS[game.startDifficulty];
+  const promotions = thresholds ? thresholds.filter(t => game.score >= t).length : 0;
+  const newIndex = Math.min(game.startDifficulty + promotions, DIFFICULTIES.length - 1);
+  if (newIndex > game.difficultyIndex) {
+    game.difficultyIndex = newIndex;
+    activeDifficulty = DIFFICULTIES[newIndex];
+    // Flash notification
+    game.promoteNotice = { name: activeDifficulty.name, color: activeDifficulty.color, timer: 180 };
+    playSound('hit');
+  }
+
   const diff = activeDifficulty;
   const p = game.player;
 
@@ -1083,6 +1215,11 @@ function update(dt) {
   // Screen shake decay
   if (game.shakeTimer > 0) {
     game.shakeTimer -= dt;
+  }
+
+  // Difficulty promotion notice decay
+  if (game.promoteNotice && game.promoteNotice.timer > 0) {
+    game.promoteNotice.timer -= dt;
   }
 }
 
@@ -1719,6 +1856,75 @@ function drawEnemy(e) {
       ctx.beginPath();
       ctx.arc(cw / 4 + 2, ch / 2 - 2, 1, 0, Math.PI * 2);
       ctx.fill();
+      break;
+    }
+
+    case 'phantom': {
+      // Stealth fighter — sleek angular shape with cloaking shimmer
+      const alpha = e.cloakAlpha !== undefined ? e.cloakAlpha : 1;
+      ctx.globalAlpha = alpha;
+
+      // Outer wings — swept back
+      ctx.fillStyle = '#2a5a6a';
+      ctx.beginPath();
+      ctx.moveTo(-e.w / 2 - 6, 0);
+      ctx.lineTo(-e.w / 6, -e.h / 2 - 4);
+      ctx.lineTo(e.w / 4, -e.h / 3);
+      ctx.lineTo(e.w / 4, e.h / 3);
+      ctx.lineTo(-e.w / 6, e.h / 2 + 4);
+      ctx.closePath();
+      ctx.fill();
+
+      // Main body
+      ctx.fillStyle = '#4ad';
+      ctx.beginPath();
+      ctx.moveTo(-e.w / 2, 0);
+      ctx.lineTo(-e.w / 5, -e.h / 3);
+      ctx.lineTo(e.w / 3, -e.h / 5);
+      ctx.lineTo(e.w / 2 + 2, 0);
+      ctx.lineTo(e.w / 3, e.h / 5);
+      ctx.lineTo(-e.w / 5, e.h / 3);
+      ctx.closePath();
+      ctx.fill();
+
+      // Cockpit canopy
+      ctx.fillStyle = '#8ef';
+      ctx.beginPath();
+      ctx.moveTo(-e.w / 4, 0);
+      ctx.lineTo(-e.w / 8, -e.h / 6);
+      ctx.lineTo(e.w / 6, 0);
+      ctx.lineTo(-e.w / 8, e.h / 6);
+      ctx.closePath();
+      ctx.fill();
+
+      // Panel seams
+      ctx.strokeStyle = '#39a';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(-e.w / 3, 0);
+      ctx.lineTo(e.w / 3, -e.h / 5);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-e.w / 3, 0);
+      ctx.lineTo(e.w / 3, e.h / 5);
+      ctx.stroke();
+
+      // Engine glow
+      ctx.fillStyle = '#0ff';
+      ctx.globalAlpha = alpha * (0.5 + Math.random() * 0.3);
+      ctx.fillRect(e.w / 2 + 2, -2, 4 + Math.random() * 5, 4);
+      ctx.globalAlpha = 1;
+
+      // Wing tip lights — flickering cyan
+      ctx.fillStyle = '#0ff';
+      ctx.globalAlpha = alpha * (0.5 + 0.5 * Math.sin((e.phase || 0) * 3));
+      ctx.beginPath();
+      ctx.arc(-e.w / 6, -e.h / 2 - 3, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(-e.w / 6, e.h / 2 + 3, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
       break;
     }
   }
@@ -2419,6 +2625,14 @@ function drawHUD() {
   ctx.font = 'bold 12px Courier New';
   ctx.textAlign = 'center';
   ctx.fillText(diff.name, W / 2, 14);
+  // Show next promotion threshold
+  const thresholds = PROMOTE_THRESHOLDS[game.startDifficulty];
+  const nextThreshold = thresholds ? thresholds.find(t => game.score < t) : undefined;
+  if (nextThreshold !== undefined) {
+    ctx.fillStyle = '#555';
+    ctx.font = '10px Courier New';
+    ctx.fillText('NEXT: ' + nextThreshold, W / 2, 28);
+  }
 
   // Lives (top-right) — mini ship icons
   ctx.textAlign = 'right';
@@ -2466,6 +2680,25 @@ function drawHUD() {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
     ctx.fillText('SHIELD ACTIVE', 15, H - 36);
+  }
+
+  // Difficulty promotion notification
+  if (game.promoteNotice && game.promoteNotice.timer > 0) {
+    const n = game.promoteNotice;
+    const alpha = n.timer < 40 ? n.timer / 40 : (n.timer > 150 ? (180 - n.timer) / 30 : 1);
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, alpha);
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(W / 2 - 150, H / 2 - 30, 300, 50);
+    ctx.strokeStyle = n.color;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(W / 2 - 150, H / 2 - 30, 300, 50);
+    ctx.fillStyle = n.color;
+    ctx.font = 'bold 18px Courier New';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('DIFFICULTY UP: ' + n.name, W / 2, H / 2 - 5);
+    ctx.restore();
   }
 }
 
@@ -2586,12 +2819,12 @@ function drawTitle() {
   ctx.fillText('ENEMY ROSTER', W / 2, 305);
 
   // Draw actual enemy ship previews on title screen
-  const rosterNames = ['DRONE', 'FIGHTER', 'BOMBER', 'INTERCEPTOR', 'CRUISER'];
-  const rosterTypes = ['drone', 'fighter', 'bomber', 'interceptor', 'cruiser'];
-  const startX = W / 2 - 180;
+  const rosterNames = ['DRONE', 'FIGHTER', 'BOMBER', 'INTERCEPTOR', 'CRUISER', 'PHANTOM'];
+  const rosterTypes = ['drone', 'fighter', 'bomber', 'interceptor', 'cruiser', 'phantom'];
+  const startX = W / 2 - 200;
 
-  for (let i = 0; i < 5; i++) {
-    const ex = startX + i * 90;
+  for (let i = 0; i < rosterTypes.length; i++) {
+    const ex = startX + i * 80;
     const ey = 345;
     const def = ENEMY_TYPES[rosterTypes[i]];
     // Draw using a fake enemy object for the preview
